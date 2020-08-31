@@ -1,5 +1,7 @@
 # APA_grioup7
 Seminar report for Summer2020/Applied Predictive Analytics
+
+
 The main file: APA_group7.Rmd
 
 The output HTML file: APA_group7.nb.html
