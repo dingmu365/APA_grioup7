@@ -1,0 +1,294 @@
+---
+title: "draft 26-08-2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+## Data Generation 
+
+
+
+```{r}
+# Scenarios.R file presents the simulation study from Powers[1] scenarios 1-8
+# so the propensity score is always 0.5
+
+source("Scenarios.R")
+
+```
+
+### two different CI methods
+
+```{r }
+#library(Rmisc)
+CI_general<-function(data,accuracy=0.95,method)
+{
+  
+  if(method=="cf")
+  {
+  CI<-as.data.frame(NULL)
+  for(i in 1:nrow(data))
+  {
+    n<-CI(data[i,],accuracy)
+    CI[i,"upper"]<-n["upper"]
+    CI[i,"lower"]<-n["lower"]
+  }
+  }else if (method=="tree"){
+    
+    
+    CI<-CI(data,accuracy)
+    
+  }else if(method=="grf")
+  {
+    X.test_predictions=data$predictions
+    X.test_variance=data$variance.estimates
+    X.test_sigma.hat = sqrt(X.test_variance)
+    z_x_sigma = 1.96*X.test_sigma.hat
+    CI<-NULL
+    CI$upper = X.test_predictions + z_x_sigma
+    CI$lower = X.test_predictions - z_x_sigma
+    CI<-as.data.frame(CI)
+  }
+  else if (method=="cm"){
+    
+    CI<-as.data.frame(NULL)
+  for(i in 1:nrow(data))
+  {
+    n<-CI(data[i,],accuracy)
+    CI[i,"upper"]<-n["upper"]
+    CI[i,"lower"]<-n["lower"]
+  }
+  }
+  return(CI)
+}
+
+```
+
+
+```{r}
+CI_quantile<-function(data,accuracy,method="no_tree")
+{
+   CI<-as.data.frame(NULL)
+  if(method=="no_tree")
+  {
+ 
+  for(j in 1:nrow(data))
+  {
+   CI[j,"upper"]<-quantile(data[j,],probs=c(accuracy+(1-accuracy)*0.5))
+   CI[j,"lower"]<-quantile(data[j,],probs=c((1-accuracy)*0.5))
+  }
+  }else if (method=="tree"){
+    
+    CI[1,"upper"]<-quantile(data,probs=c(accuracy+(1-accuracy)*0.5))
+    CI[1,"lower"]<-quantile(data,probs=c((1-accuracy)*0.5))
+  }
+  return(CI)
+}
+```
+
+### 95% coverage 
+
+```{r }
+# the ratio of tau to hat tau
+
+coverage<- function(true_tau, CI)
+{
+  counting = sum(true_tau>CI["lower"] & true_tau< CI["upper"])
+  return((counting+0.0)/length(true_tau))
+}
+
+```
+
+```{r}
+
+coverage_tree<- function(true_tau, CI)
+{
+  counting = sum(true_tau>=CI_ctr["lower"] & true_tau<= CI_ctr["upper"])
+  return((counting+0.0)/length(true_tau))
+}
+```
+
+```{r include=FALSE}
+source("causalMARS.R")
+source("truncpow.R")
+source("myridge.R")
+source("predict.causalMARS.R")
+source("makebx.newmars.R")
+source("predict.bagged.causalMARS.R")
+source("bagged.causalMARS.R")
+```
+
+
+### Generalized Random Forest
+```{r }
+# 
+# c_grf<-function(mu_num,tau_num,option_num,
+#                 num.trees =100,
+#                 p = 11,
+#                 asym = .5,
+#                 n = 1000,
+#                 propens = .5,
+#                 sig = .01,
+#                 treatsize = .5,
+#                 levsize = 1)
+# {
+#   
+  # ntr <- round(.9*n)
+  # ntest <- n - ntr
+  # 
+  # 
+  # dataTrain <- data[["dataTrain"]]
+  # dataTest<- data[["dataTest"]]
+  # w <- data[["w"]]
+  # p <- data[["p"]]# number of total covariates
+  # f <- data[["f"]]# formulas for estimation
+  # tau.grf<-causal_forest(subset(dataTrain, select = -c(tau_true,w,y)), dataTrain$y, dataTrain$w,num.trees)
+  # # Estimate treatment effects for the test sample.
+  # tau.hat = predict(tau.grf, subset(dataTest , select= -c(tau_true,w,y)),estimate.variance = TRUE, type = all)
+  # 
+  # grf_result<-list(tau.grf=tau.grf, dataTrain=dataTrain, dataTest=dataTest, prediction=tau.hat)
+  # return(grf_result)
+# }
+
+library(grf)
+library(dplyr)
+#install_github("susanathey/causalTree",force=TRUE)
+library(processx)
+library(devtools)
+library(rpart)
+library(rpart.plot)
+library(reshape2)
+library(plyr)
+#install_github("susanathey/causalTree",force=TRUE)
+library(causalTree)
+
+source("Scenarios.R")
+
+c_grf<- function(data,dataTest)
+{
+  dataTrain <- data[["data"]]
+  dataTest<-dataTest[["data"]]
+
+  # w <- data[["w"]]
+  # p <- data[["p"]]# number of total covariates
+  # f <- data[["f"]]# formulas for estimation
+ 
+  tau.grf<-causal_forest(subset(dataTrain, select = -c(tau_true,w,y)), dataTrain$y, dataTrain$w,num.trees)
+  # Estimate treatment effects for the test sample.
+   tau.hat = predict(tau.grf, subset(dataTest , select= -c(tau_true,w,y)),estimate.variance = TRUE)
+   grf_result<-list(tau.grf=tau.grf, prediction=tau.hat)
+  return(grf_result)
+}
+library(causalTree)
+c_tree<-function(data,dataTest,split.Bucket.temp=F,split.Rule.temp="policy"
+                 ,cv.option.temp = "CT")
+{
+  # split.Bucket.temp=F
+  # split.Rule.temp="policy"
+  # cv.option.temp = "CT"
+  # 
+  dataTrain<-data[["data"]]
+  dataTest<-dataTest[["data"]]
+  ntr <-nrow(dataTrain)- round(.333*nrow(dataTrain))
+  dataEst<-dataTrain[(ntr+1):nrow(dataTrain),]
+ 
+  dataTrain<-dataTrain[1:ntr,]
+  rownames(dataEst)<-1:nrow(dataEst)
+  p <- data[["p"]]# number of total covariates
+  f <- data[["f"]]# formulas for estimation
+  ncov_sample<-floor(p/3) #number of covariates (randomly sampled) to use to build tree
+  ncolx<-p #total number of covariates
+  xvalvec = sample(5, nrow(dataTrain), replace=TRUE)
+  
+  honest.causalTree(as.formula(paste("y~",f)), data = dataTrain, treatment = dataTrain$w,est_data = dataEst, est_treatment = dataEst$w, split.Rule = split.Rule.temp, cv.option = cv.option.temp, split.Honest = T, cv.Honest = T, split.Bucket = split.Bucket.temp, xval = xvalvec, cp = 0, minsize = 25, propensity = 0.5)
+  
+  opcpid <- which.min(tree$cp[,4])
+  opcp <- tree$cp[opcpid,1]
+  tree_prune <- prune(tree, cp = opcp)
+   #can use tree_prune or tree as trained causal tree model
+  predicthonest =predict(tree_prune,newdata=dataTest,type="vector")
+  
+  return(predicthonest)
+}
+
+c_forest<-function(data,dataTest,num_tree=100)
+{
+  dataTrain<-data[["data"]]
+  dataTest<-dataTest[["data"]]
+  w <- data[["w"]]
+  p <- data[["p"]]# number of total covariates
+  f <- data[["f"]]# formulas for estimation
+  ncov_sample<-floor(p/3) #number of covariates (randomly sampled) to use to build tree
+  ncolx<-p #total number of covariates
+  #xvalvec = sample(5, nrow(dataTrain), replace=TRUE)
+  cf <- causalForest(as.formula(paste("y~",f)), data=dataTrain, treatment=w,
+split.Rule="CT", split.Honest=T,  split.Bucket=F, bucketNum = 5,bucketMax = 100, cv.option="CT", cv.Honest=T, minsize = 2L, split.alpha = 0.5, cv.alpha = 0.5,sample.size.total = floor(nrow(dataTrain) / 2), sample.size.train.frac = .5, mtry = ceiling(ncol(dataTrain)/3),nodesize = 3, num.trees=num_tree,ncolx=ncolx,ncov_sample=ncov_sample) 
+  
+  cfpredtest <- predict(cf, newdata=dataTest,predict.all = TRUE, type="vector")
+  cf_result<-list(cf=cf, dataTrain=dataTrain, dataTest=dataTest, prediction=cfpredtest)
+  return(cf_result)
+}
+
+
+c_cm<-function(data,dataTest, nbag =100)
+{
+  dataTrain <- data[["data"]]
+  dataTest<- dataTest[["data"]]
+  w <- data[["w"]]
+  p <- data[["p"]]# number of total covariates
+  f <- data[["f"]]# formulas for estimation
+  fit_bcm = bagged.causalMARS(subset(dataTrain, select = -c(tau_true,w,y)), dataTrain$w, dataTrain$y, nbag)
+  
+  pred_bcm = predict(fit_bcm, newx =subset(dataTest, select = -c(tau_true,w,y))) 
+   
+  cm_result<-list(fit_bcm=fit_bcm, prediction=pred_bcm)
+  return(cm_result)
+}
+
+
+mu_num = 5
+tau_num = 2
+option_num = 1
+p=300
+n=100
+option_num
+num.trees =100
+asym = .5
+propens = .5
+sig = .01
+treatsize = .5
+levsize = 1
+
+
+   wrapping_model<-function (mu_num ,tau_num ,option_num,p = 11, n = 1000,times=500,num_tree=10 )
+  {
+  dataTest<-Data_Gen(p,asym,n,propens, sig, treatsize, levsize, mu_num, tau_num, option_num)
+  hat_tao_ct<-list()
+  hat_tau_cf<-list()
+  hat_tau_grf<-list()
+  hat_tau_grf_sd<-list()
+  hat_Tau_cm<-list()
+  for(i in 1:10)
+  {
+  data<-Data_Gen(p,asym,n,propens, sig, treatsize, levsize, mu_num, tau_num, option_num)
+  
+  ct<-c_tree(data,dataTest)
+  hat_tao_ct[i]<-ct
+  
+  cf<-c_forest(data,dataTest,num_tree=10)  
+  hat_tau_cf[i]<-cf[["prediction"]]  
+  
+  general_rf<-c_grf(data,dataTest)
+  hat_tau_grf[[i]]<-general_rf[["prediction"]]
+  
+  causal_cm<-c_cm (data,dataTest)
+  hat_tau_cm[[i]]<-causal_cm[["prediction"]]
+  }
+  result<-list(hat_tao_ct,hat_tau_cf,hat_tau_grf,hat_tau_cm)
+   }
+    wrapping_model(6,8,1,10,100,5)
+   
+```
